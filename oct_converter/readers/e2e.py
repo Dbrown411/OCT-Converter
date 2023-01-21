@@ -5,19 +5,21 @@ from itertools import chain
 from pathlib import Path
 
 import numpy as np
-from construct import (
-    Array,
-    Float32l,
-    Int8un,
-    Int16un,
-    Int32sn,
-    Int32un,
-    Int64un,
-    PaddedString,
-    Struct,
-)
 
+from oct_converter.exceptions import InvalidOCTReaderError
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
+
+from .binary_structs.e2e_binary import (
+    bscan_metadata_structure,
+    chunk_structure,
+    contour_structure,
+    header_structure,
+    image_structure,
+    lat_structure,
+    main_directory_structure,
+    patient_id_structure,
+    sub_directory_structure,
+)
 
 
 class E2E(object):
@@ -37,111 +39,23 @@ class E2E(object):
     """
 
     def __init__(self, filepath):
-        self.filepath = Path(filepath)
-        if not self.filepath.exists():
-            raise FileNotFoundError(self.filepath)
-        self.header_structure = Struct(
-            "magic1" / PaddedString(12, "ascii"),
-            "version" / Int32un,
-            "unknown" / Array(10, Int16un),
-        )
-        self.main_directory_structure = Struct(
-            "magic2" / PaddedString(12, "ascii"),
-            "version" / Int32un,
-            "unknown" / Array(10, Int16un),
-            "num_entries" / Int32un,
-            "current" / Int32un,
-            "prev" / Int32un,
-            "unknown3" / Int32un,
-        )
-        self.sub_directory_structure = Struct(
-            "pos" / Int32un,
-            "start" / Int32un,
-            "size" / Int32un,
-            "unknown" / Int32un,
-            "patient_id" / Int32un,
-            "study_id" / Int32un,
-            "series_id" / Int32un,
-            "slice_id" / Int32sn,
-            "unknown2" / Int16un,
-            "unknown3" / Int16un,
-            "type" / Int32un,
-            "unknown4" / Int32un,
-        )
-        self.chunk_structure = Struct(
-            "magic3" / PaddedString(12, "ascii"),
-            "unknown" / Int32un,
-            "unknown2" / Int32un,
-            "pos" / Int32un,
-            "size" / Int32un,
-            "unknown3" / Int32un,
-            "patient_id" / Int32un,
-            "study_id" / Int32un,
-            "series_id" / Int32un,
-            "slice_id" / Int32sn,
-            "ind" / Int16un,
-            "unknown4" / Int16un,
-            "type" / Int32un,
-            "unknown5" / Int32un,
-        )
-        self.image_structure = Struct(
-            "size" / Int32un,
-            "type" / Int32un,
-            "unknown" / Int32un,
-            "width" / Int32un,
-            "height" / Int32un,
-        )
-        self.patient_id_structure = Struct(
-            "first_name" / PaddedString(31, "ascii"),
-            "surname" / PaddedString(66, "ascii"),
-            "birthdate" / Int32un,
-            "sex" / PaddedString(1, "ascii"),
-            "patient_id" / PaddedString(25, "ascii"),
-        )
-        self.lat_structure = Struct(
-            "unknown" / Array(14, Int8un), "laterality" / Int8un, "unknown2" / Int8un
-        )
-        self.contour_structure = Struct(
-            "unknown0" / Int32un,
-            "id" / Int32un,
-            "unknown1" / Int32un,
-            "width" / Int32un,
-        )
-
-        # following the spec from
-        # https://github.com/neurodial/LibE2E/blob/d26d2d9db64c5f765c0241ecc22177bb0c440c87/E2E/dataelements/bscanmetadataelement.cpp#L75
-        self.bscan_metadata = Struct(
-            "unknown1" / Int32un,
-            "imgSizeX" / Int32un,
-            "imgSizeY" / Int32un,
-            "posX1" / Float32l,
-            "posY1" / Float32l,
-            "posX2" / Float32l,
-            "posY2" / Float32l,
-            "zero1" / Int32un,
-            "unknown2" / Float32l,
-            "scaley" / Float32l,
-            "unknown3" / Float32l,
-            "zero2" / Int32un,
-            "unknown4" / Array(2, Float32l),
-            "zero3" / Int32un,
-            "imgSizeWidth" / Int32un,
-            "numImages" / Int32un,
-            "aktImage" / Int32un,
-            "scanType" / Int32un,
-            "centrePosX" / Float32l,
-            "centrePosY" / Float32l,
-            "unknown5" / Int32un,
-            "acquisitionTime" / Int64un,
-            "numAve" / Int32un,
-            "imgQuality" / Float32l,
-        )
-
         self.power = pow(2, 10)
         self.sex = None
         self.first_name = None
         self.surname = None
         self.acquisition_date = None
+
+        self.filepath = Path(filepath)
+        if not self.filepath.exists():
+            raise FileNotFoundError(self.filepath)
+        self._validate(self.filepath)
+
+    def _validate(self, path: Path) -> bool:
+        try:
+            header_structure.parse_file(path)
+        except UnicodeDecodeError:
+            raise InvalidOCTReaderError("OCT header does not match E2E .OCT format.")
+        return True
 
     def read_oct_volume(self):
         """Reads OCT data.
@@ -160,10 +74,10 @@ class E2E(object):
 
         with open(self.filepath, "rb") as f:
             raw = f.read(36)
-            header = self.header_structure.parse(raw)
+            header = header_structure.parse(raw)
 
             raw = f.read(52)
-            main_directory = self.main_directory_structure.parse(raw)
+            main_directory = main_directory_structure.parse(raw)
 
             # traverse list of main directories in first pass
             directory_stack = []
@@ -173,7 +87,7 @@ class E2E(object):
                 directory_stack.append(current)
                 f.seek(current)
                 raw = f.read(52)
-                directory_chunk = self.main_directory_structure.parse(raw)
+                directory_chunk = main_directory_structure.parse(raw)
                 current = directory_chunk.prev
 
             # traverse in second pass and  get all subdirectories
@@ -182,11 +96,11 @@ class E2E(object):
             for position in directory_stack:
                 f.seek(position)
                 raw = f.read(52)
-                directory_chunk = self.main_directory_structure.parse(raw)
+                directory_chunk = main_directory_structure.parse(raw)
 
                 for ii in range(directory_chunk.num_entries):
                     raw = f.read(44)
-                    chunk = self.sub_directory_structure.parse(raw)
+                    chunk = sub_directory_structure.parse(raw)
                     volume_string = "{}_{}_{}".format(
                         chunk.patient_id, chunk.study_id, chunk.series_id
                     )
@@ -216,12 +130,12 @@ class E2E(object):
             for start, pos in chunk_stack:
                 f.seek(start)
                 raw = f.read(60)
-                chunk = self.chunk_structure.parse(raw)
+                chunk = chunk_structure.parse(raw)
 
                 if chunk.type == 9:  # patient data
                     raw = f.read(127)
                     try:
-                        patient_data = self.patient_id_structure.parse(raw)
+                        patient_data = patient_id_structure.parse(raw)
                         self.sex = patient_data.sex
                         self.first_name = patient_data.first_name
                         self.surname = patient_data.surname
@@ -233,7 +147,7 @@ class E2E(object):
 
                 elif chunk.type == 10004:  # bscan metadata
                     raw = f.read(104)
-                    bscan_metadata = self.bscan_metadata.parse(raw)
+                    bscan_metadata = bscan_metadata_structure.parse(raw)
                     start_epoch = datetime(
                         year=1600, month=12, day=31, hour=23, minute=59
                     )
@@ -246,7 +160,7 @@ class E2E(object):
                 elif chunk.type == 11:  # laterality data
                     raw = f.read(20)
                     try:
-                        laterality_data = self.lat_structure.parse(raw)
+                        laterality_data = lat_structure.parse(raw)
                         if laterality_data.laterality == 82:
                             laterality = "R"
                         elif laterality_data.laterality == 76:
@@ -256,7 +170,7 @@ class E2E(object):
 
                 elif chunk.type == 10019:  # contour data
                     raw = f.read(16)
-                    contour_data = self.contour_structure.parse(raw)
+                    contour_data = contour_structure.parse(raw)
 
                     if contour_data.width > 0:
                         volume_string = "{}_{}_{}".format(
@@ -288,7 +202,7 @@ class E2E(object):
 
                 elif chunk.type == 1073741824:  # image data
                     raw = f.read(20)
-                    image_data = self.image_structure.parse(raw)
+                    image_data = image_structure.parse(raw)
 
                     if chunk.ind == 1:  # oct data
                         count = image_data.height * image_data.width
@@ -378,10 +292,10 @@ class E2E(object):
         """
         with open(self.filepath, "rb") as f:
             raw = f.read(36)
-            header = self.header_structure.parse(raw)
+            header = header_structure.parse(raw)
 
             raw = f.read(52)
-            main_directory = self.main_directory_structure.parse(raw)
+            main_directory = main_directory_structure.parse(raw)
 
             # traverse list of main directories in first pass
             directory_stack = []
@@ -393,7 +307,7 @@ class E2E(object):
                 directory_stack.append(current)
                 f.seek(current)
                 raw = f.read(52)
-                directory_chunk = self.main_directory_structure.parse(raw)
+                directory_chunk = main_directory_structure.parse(raw)
                 current = directory_chunk.prev
 
             # traverse in second pass and  get all subdirectories
@@ -401,11 +315,11 @@ class E2E(object):
             for position in directory_stack:
                 f.seek(position)
                 raw = f.read(52)
-                directory_chunk = self.main_directory_structure.parse(raw)
+                directory_chunk = main_directory_structure.parse(raw)
 
                 for ii in range(directory_chunk.num_entries):
                     raw = f.read(44)
-                    chunk = self.sub_directory_structure.parse(raw)
+                    chunk = sub_directory_structure.parse(raw)
                     if chunk.start > chunk.pos:
                         chunk_stack.append([chunk.start, chunk.size])
 
@@ -417,12 +331,12 @@ class E2E(object):
             for start, pos in chunk_stack:
                 f.seek(start)
                 raw = f.read(60)
-                chunk = self.chunk_structure.parse(raw)
+                chunk = chunk_structure.parse(raw)
 
                 if chunk.type == 9:  # patient data
                     raw = f.read(127)
                     try:
-                        patient_data = self.patient_id_structure.parse(raw)
+                        patient_data = patient_id_structure.parse(raw)
                         self.sex = patient_data.sex
                         self.first_name = patient_data.first_name
                         self.surname = patient_data.surname
@@ -435,7 +349,7 @@ class E2E(object):
                 if chunk.type == 11:  # laterality data
                     raw = f.read(20)
                     try:
-                        laterality_data = self.lat_structure.parse(raw)
+                        laterality_data = lat_structure.parse(raw)
                         if laterality_data.laterality == 82:
                             laterality = "R"
                         elif laterality_data.laterality == 76:
@@ -445,7 +359,7 @@ class E2E(object):
 
                 if chunk.type == 1073741824:  # image data
                     raw = f.read(20)
-                    image_data = self.image_structure.parse(raw)
+                    image_data = image_structure.parse(raw)
                     count = image_data.height * image_data.width
                     if count == 0:
                         break

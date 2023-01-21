@@ -12,7 +12,10 @@ from numpy.typing import NDArray
 from oct_converter.exceptions import InvalidOCTReaderError
 from oct_converter.image_types import OCTVolumeWithMetaData
 
-from .binary_structs import bioptigen_file_structure, bioptigen_oct_header_struct
+from .binary_structs.boct_binary import (
+    bioptigen_file_structure,
+    bioptigen_oct_header_struct,
+)
 
 
 class BOCT(object):
@@ -25,8 +28,6 @@ class BOCT(object):
     """
 
     bioptigen_scan_type_map = {0: "linear", 1: "rect", 3: "rad"}
-    file_structure = bioptigen_file_structure
-    header_structure = bioptigen_oct_header_struct
 
     def __init__(self, filepath: Union[Path, str]):
         self.filepath = Path(filepath)
@@ -36,7 +37,7 @@ class BOCT(object):
 
     def _validate(self, path: Path) -> bool:
         try:
-            self.header_structure.parse_file(path)
+            bioptigen_oct_header_struct.parse_file(path)
         except UnicodeDecodeError:
             raise InvalidOCTReaderError(
                 "OCT header does not match Bioptigen .OCT format. Did you mean to use Optovue .oct (POCT)?"
@@ -58,7 +59,7 @@ class BOCT(object):
         self.patient_id = self.filepath.stem
 
         # Lazily parse the file without loading frame pixels
-        oct = self.file_structure.parse_file(self.filepath)
+        oct = bioptigen_file_structure.parse_file(self.filepath)
         header = oct.header
         self.frames = FrameGenerator(oct.data)
         scantype = self.bioptigen_scan_type_map[header.scantype.value]

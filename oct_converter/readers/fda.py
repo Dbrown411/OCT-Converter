@@ -1,10 +1,16 @@
 from pathlib import Path
 
 import numpy as np
-from construct import Int32un, PaddedString, Struct
 from pylibjpeg import decode
 
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
+
+from .binary_structs.fda_binary import (
+    fda_fundus_header,
+    fda_header,
+    fda_oct_header,
+    fda_oct_header_2,
+)
 
 
 class FDA(object):
@@ -26,42 +32,6 @@ class FDA(object):
         self.filepath = Path(filepath)
         if not self.filepath.exists():
             raise FileNotFoundError(self.filepath)
-        self.header = Struct(
-            "FOCT" / PaddedString(4, "ascii"),
-            "FDA" / PaddedString(3, "ascii"),
-            "version_info_1" / Int32un,
-            "version_info_2" / Int32un,
-        )
-        self.oct_header = Struct(
-            "type" / PaddedString(1, "ascii"),
-            "unknown1" / Int32un,
-            "unknown2" / Int32un,
-            "width" / Int32un,
-            "height" / Int32un,
-            "number_slices" / Int32un,
-            "unknown3" / Int32un,
-        )
-
-        self.oct_header_2 = Struct(
-            "unknown" / PaddedString(1, "ascii"),
-            "width" / Int32un,
-            "height" / Int32un,
-            "bits_per_pixel" / Int32un,
-            "number_slices" / Int32un,
-            "unknown" / PaddedString(1, "ascii"),
-            "size" / Int32un,
-        )
-
-        self.fundus_header = Struct(
-            "width" / Int32un,
-            "height" / Int32un,
-            "bits_per_pixel" / Int32un,
-            "number_slices" / Int32un,
-            "unknown" / PaddedString(4, "ascii"),
-            "size" / Int32un,
-            # 'img' / Int8un,
-        )
-
         self.chunk_dict = self.get_list_of_file_chunks()
 
     def get_list_of_file_chunks(self):
@@ -74,7 +44,7 @@ class FDA(object):
         with open(self.filepath, "rb") as f:
             # skip header
             raw = f.read(15)
-            header = self.header.parse(raw)
+            header = fda_header.parse(raw)
 
             eof = False
             while not eof:
@@ -105,7 +75,7 @@ class FDA(object):
             chunk_location, chunk_size = self.chunk_dict[b"@IMG_JPEG"]
             f.seek(chunk_location)  # Set the chunk’s current position.
             raw = f.read(25)
-            oct_header = self.oct_header.parse(raw)
+            oct_header = fda_oct_header.parse(raw)
             volume = np.zeros(
                 (oct_header.height, oct_header.width, oct_header.number_slices)
             )
@@ -132,7 +102,7 @@ class FDA(object):
             chunk_location, chunk_size = self.chunk_dict[b"@IMG_MOT_COMP_03"]
             f.seek(chunk_location)  # Set the chunk’s current position.
             raw = f.read(22)
-            oct_header = self.oct_header_2.parse(raw)
+            oct_header = fda_oct_header_2.parse(raw)
             number_pixels = (
                 oct_header.width * oct_header.height * oct_header.number_slices
             )
@@ -159,7 +129,7 @@ class FDA(object):
             chunk_location, chunk_size = self.chunk_dict[b"@IMG_FUNDUS"]
             f.seek(chunk_location)  # Set the chunk’s current position.
             raw = f.read(24)  # skip 24 is important
-            fundus_header = self.fundus_header.parse(raw)
+            fundus_header = fda_fundus_header.parse(raw)
             number_pixels = fundus_header.width * fundus_header.height * 3
             raw_image = f.read(fundus_header.size)
             image = decode(raw_image)
